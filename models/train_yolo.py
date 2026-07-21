@@ -30,7 +30,7 @@ def main():
     os.environ.setdefault("MLFLOW_EXPERIMENT_NAME", "vision-qa-yolo")
 
     model = YOLO(args.model)
-    results = model.train(
+    model.train(
         data=args.data,
         epochs=args.epochs,
         imgsz=args.imgsz,

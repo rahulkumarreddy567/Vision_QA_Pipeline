@@ -11,6 +11,11 @@ services:
     environment:
       - YOLO_WEIGHTS=runs/detect/defect_yolo11/weights/best.pt
       - RESNET_WEIGHTS=models/resnet50_defect_classifier.pt
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     depends_on:
       - mlflow
 

@@ -1,10 +1,12 @@
 import io
+import os
 import time
 import base64
+import tempfile
 from collections import deque
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
@@ -50,6 +52,34 @@ def stats():
     }
 
 
+@app.get("/metrics", response_class=PlainTextResponse)
+def prometheus_metrics():
+    """Prometheus-compatible /metrics endpoint for Grafana/Alertmanager scraping."""
+    n = len(_recent_latencies_ms)
+    if n == 0:
+        avg_lat, p95_lat, avg_defects = 0.0, 0.0, 0.0
+    else:
+        sorted_lat = sorted(_recent_latencies_ms)
+        avg_lat = sum(_recent_latencies_ms) / n
+        p95_lat = sorted_lat[int(n * 0.95) - 1]
+        avg_defects = sum(_recent_defect_counts) / n
+    lines = [
+        "# HELP vision_qa_frames_processed Total frames processed (rolling window)",
+        "# TYPE vision_qa_frames_processed gauge",
+        f"vision_qa_frames_processed {n}",
+        "# HELP vision_qa_avg_latency_ms Average inference latency in milliseconds",
+        "# TYPE vision_qa_avg_latency_ms gauge",
+        f"vision_qa_avg_latency_ms {avg_lat:.2f}",
+        "# HELP vision_qa_p95_latency_ms P95 inference latency in milliseconds",
+        "# TYPE vision_qa_p95_latency_ms gauge",
+        f"vision_qa_p95_latency_ms {p95_lat:.2f}",
+        "# HELP vision_qa_avg_defects_per_frame Average defects detected per frame",
+        "# TYPE vision_qa_avg_defects_per_frame gauge",
+        f"vision_qa_avg_defects_per_frame {avg_defects:.4f}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 @app.get("/live")
 def live_demo_page():
     """Serves the browser demo page (webcam -> WebSocket -> live overlay)."""
@@ -59,13 +89,18 @@ def live_demo_page():
 def _run_inference_on_image(image: Image.Image):
     pipeline = get_pipeline()
     start = time.perf_counter()
-    tmp_path = "/tmp/_qa_frame.jpg"
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp_path = tmp.name
     image.save(tmp_path)
     detections = pipeline.predict(tmp_path)
     elapsed_ms = (time.perf_counter() - start) * 1000
 
     _recent_latencies_ms.append(elapsed_ms)
     _recent_defect_counts.append(len(detections))
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
     return detections, elapsed_ms
 
 

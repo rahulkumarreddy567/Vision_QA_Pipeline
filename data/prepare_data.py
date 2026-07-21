@@ -12,7 +12,6 @@ It documents where to get each one and converts annotations into YOLO format
 """
 
 import argparse
-import os
 import shutil
 import random
 from pathlib import Path

@@ -16,7 +16,6 @@ Usage:
 
 import argparse
 import os
-import time
 
 import mlflow
 import mlflow.pytorch

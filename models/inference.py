@@ -5,7 +5,6 @@ Also includes a helper to export cropped detections from a labeled dataset, whic
 you use to build the training set for train_resnet.py.
 """
 
-import os
 from pathlib import Path
 from typing import List, Dict
 
