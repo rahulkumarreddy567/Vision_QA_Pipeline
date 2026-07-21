@@ -23,6 +23,8 @@ jobs:
 
       - name: Run tests
         run: pytest tests/ -v
+        env:
+          PYTHONPATH: ${{ github.workspace }}
 
   build-and-push:
     needs: test
