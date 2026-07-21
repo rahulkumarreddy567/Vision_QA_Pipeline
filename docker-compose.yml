@@ -1,0 +1,28 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./runs:/app/runs
+      - ./models:/app/models
+    environment:
+      - YOLO_WEIGHTS=runs/detect/defect_yolo11/weights/best.pt
+      - RESNET_WEIGHTS=models/resnet50_defect_classifier.pt
+    depends_on:
+      - mlflow
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.0
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlruns
+    command: >
+      mlflow server
+      --backend-store-uri /mlruns
+      --default-artifact-root /mlruns
+      --host 0.0.0.0
+      --port 5000
