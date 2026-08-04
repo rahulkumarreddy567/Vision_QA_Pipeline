@@ -100,6 +100,49 @@ uvicorn api.main:app --reload --port 8000
 # Live demo:  GET  http://localhost:8000/live
 ```
 
+## Local smoke test
+
+After starting the API, you can quickly verify the service and do a sample prediction.
+
+- Health check:
+
+```bash
+curl -sS http://127.0.0.1:8000/health | jq
+```
+
+- Sample image POST (one-liner using Python to generate a dummy JPEG and POST with httpx):
+
+```bash
+python - <<'PY'
+import io, httpx
+from PIL import Image
+img = Image.new('RGB', (224,224), color=(120,120,120))
+buf = io.BytesIO(); img.save(buf, format='JPEG'); buf.seek(0)
+files = {'file': ('test.jpg', buf.getvalue(), 'image/jpeg')}
+res = httpx.post('http://127.0.0.1:8000/predict', files=files)
+print(res.status_code)
+print(res.json())
+PY
+```
+
+Notes:
+- On Windows PowerShell, activate the venv with `venv\Scripts\Activate.ps1` or run the python executable directly from the `.venv` folder.
+- If you don't have trained weights present, the API will run in `demo mode` and return a fallback detection.
+
+## Committing local fixes
+
+I made small runtime fixes to support running the API and tests without installing heavy ML packages during CI:
+
+- `models/inference.py`: lazy-imports for `torch`, `torchvision`, and `ultralytics` so the API and tests can run in lightweight environments.
+- `api/main.py`: static files served using package-relative paths so tests don't fail when run from a different CWD.
+
+To commit these local changes:
+
+```bash
+git add -A
+git commit -m "fix: lazy-load ML deps; make static path package-relative; update README"
+```
+
 ### 6b. Real-time inference — two options
 
 **Option A: local webcam/video window (OpenCV)**

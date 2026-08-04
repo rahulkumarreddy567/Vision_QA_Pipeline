@@ -8,40 +8,72 @@ you use to build the training set for train_resnet.py.
 from pathlib import Path
 from typing import List, Dict
 
-import torch
 from PIL import Image
-from torchvision import transforms
-from ultralytics import YOLO
 
-CLASSIFY_TF = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
+# Heavy ML deps are imported lazily so the API/test surface works without
+# installing torch/torchvision/ultralytics (useful for CI or lightweight runs).
+try:
+    import torch
+except Exception:
+    torch = None
+
+try:
+    from torchvision import transforms
+except Exception:
+    transforms = None
+
+
+def _make_classify_tf():
+    if transforms is None:
+        return None
+    return transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
 
 
 class DefectPipeline:
     def __init__(self, yolo_weights: str, resnet_weights: str, device: str = None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or ("cuda" if (torch is not None and torch.cuda.is_available()) else "cpu")
         self.detector = None
         self.classifier = None
         self.classes = ["defect"]
         self.fallback_mode = False
+        self.CLASSIFY_TF = _make_classify_tf()
 
         self._load_detector(yolo_weights)
         self._load_classifier(resnet_weights)
 
     def _load_detector(self, yolo_weights: str):
-        if yolo_weights and Path(yolo_weights).exists():
-            self.detector = YOLO(yolo_weights)
-            return
-
+        # Import ultralytics only when needed
         try:
-            self.detector = YOLO("yolo11n.pt")
+            from ultralytics import YOLO
         except Exception:
-            self.fallback_mode = True
+            YOLO = None
+
+        if yolo_weights and Path(yolo_weights).exists() and YOLO is not None:
+            try:
+                self.detector = YOLO(yolo_weights)
+                return
+            except Exception:
+                pass
+
+        if YOLO is not None:
+            try:
+                self.detector = YOLO("yolo11n.pt")
+                return
+            except Exception:
+                pass
+
+        # if we reach here, detector isn't available
+        self.fallback_mode = True
 
     def _load_classifier(self, resnet_weights: str):
+        if torch is None:
+            self.fallback_mode = True
+            return
+
         if not resnet_weights or not Path(resnet_weights).exists():
             self.fallback_mode = True
             return
@@ -51,7 +83,7 @@ class DefectPipeline:
             from torchvision import models
             import torch.nn as nn
 
-            self.classes = checkpoint["classes"]
+            self.classes = checkpoint.get("classes", self.classes)
             self.classifier = models.resnet50(weights=None)
             self.classifier.fc = nn.Linear(self.classifier.fc.in_features, len(self.classes))
             self.classifier.load_state_dict(checkpoint["model_state"])
@@ -84,7 +116,12 @@ class DefectPipeline:
             det_conf = float(box.conf[0])
 
             crop = image.crop((x1, y1, x2, y2))
-            tensor = CLASSIFY_TF(crop).unsqueeze(0).to(self.device)
+            if self.CLASSIFY_TF is None:
+                # transforms not available — treat as fallback for classifier
+                self.fallback_mode = True
+                return self._fallback_prediction(image)
+
+            tensor = self.CLASSIFY_TF(crop).unsqueeze(0).to(self.device)
             with torch.no_grad():
                 logits = self.classifier(tensor)
                 probs = torch.softmax(logits, dim=1)[0]

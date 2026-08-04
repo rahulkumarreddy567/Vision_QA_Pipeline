@@ -18,7 +18,8 @@ app = FastAPI(
     description="Two-stage (YOLO11 + ResNet50) manufacturing defect detection API",
     version="1.0.0",
 )
-app.mount("/static", StaticFiles(directory="api/static"), name="static")
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # rolling window of recent inference latencies + defect counts, for a live /stats view
 _recent_latencies_ms = deque(maxlen=200)
@@ -83,7 +84,7 @@ def prometheus_metrics():
 @app.get("/live")
 def live_demo_page():
     """Serves the browser demo page (webcam -> WebSocket -> live overlay)."""
-    return FileResponse("api/static/live.html")
+    return FileResponse(os.path.join(STATIC_DIR, "live.html"))
 
 
 def _run_inference_on_image(image: Image.Image):
