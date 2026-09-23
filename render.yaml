@@ -1,4 +1,4 @@
-# render.yaml — Free deployment on Render.com
+# render.yaml — Deployment on Render.com
 # 1. Push this repo to GitHub
 # 2. Go to https://dashboard.render.com → New → Blueprint
 # 3. Connect your repo — Render reads this file and deploys automatically
@@ -9,11 +9,16 @@ services:
     name: vision-qa-pipeline
     runtime: docker
     dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: free          # free tier: 512 MB RAM, spins down after 15 min inactivity
     healthCheckPath: /health
     envVars:
+      - key: PORT
+        value: 10000                # Render's default injected port — must match what we bind to
       - key: YOLO_WEIGHTS
-        value: yolo11n.pt          # bundled nano weights — no training needed for demo
+        value: yolo11n.pt           # bundled nano weights — no training needed for demo
       - key: RESNET_WEIGHTS
-        value: ""                  # empty = fallback/demo mode on free tier
-    autoDeploy: true               # redeploy on every push to main
+        value: ""                   # empty = fallback/demo mode on free tier
+      - key: ALLOWED_ORIGINS
+        value: "*"
+    autoDeploy: true                # redeploy on every push to main
