@@ -1,11 +1,13 @@
 # Vision QA Pipeline — Manufacturing Defect Detection
 
+[![CI/CD](https://github.com/YOUR_USERNAME/vision-qa-pipeline/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/YOUR_USERNAME/vision-qa-pipeline/actions)
+
 A production-grade, two-stage computer vision system for industrial quality control
 aligned with **ISO 9001 / Industry 4.0** manufacturing standards.
 **YOLO11** localizes defect regions; a fine-tuned **ResNet50** classifies defect type/severity
 on each crop. Served via **FastAPI**, monitored with **Prometheus + Grafana**,
-experiment-tracked with **MLflow**, containerized with **Docker**, and deployed through a
-**GitHub Actions CI/CD pipeline to AWS ECS (eu-west-3 — Paris)**.
+experiment-tracked with **MLflow**, containerized with **Docker**, and deployed for free via
+**Render.com** (or optionally to **AWS ECS eu-west-3**) through a **GitHub Actions CI/CD pipeline**.
 
 ## Architecture
 
@@ -56,7 +58,24 @@ vision-qa-pipeline/
 └── README.md
 ```
 
-## Getting started
+## Free Cloud Deployment (Render.com)
+
+Render.com gives you a **free public HTTPS URL** with zero credit card required.
+
+1. Push this repo to GitHub
+2. Go to [dashboard.render.com](https://dashboard.render.com) → **New** → **Blueprint**
+3. Connect your GitHub repo — Render reads `render.yaml` and deploys automatically
+4. Your live URL: `https://vision-qa-pipeline.onrender.com`
+
+> Note: Free tier spins down after 15 min of inactivity (cold start ~30s). Upgrade to Starter ($7/mo) for always-on.
+
+Endpoints on your live URL:
+- `GET  /health` — service health + model status
+- `POST /predict` — upload an image, get JSON detections
+- `GET  /docs` — interactive Swagger UI
+- `GET  /live` — browser webcam demo
+- `GET  /metrics` — Prometheus scrape endpoint
+- `GET  /stats` — rolling latency + defect rate stats
 
 ### 1. Set up environment
 ```bash

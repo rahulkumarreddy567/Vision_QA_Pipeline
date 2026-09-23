@@ -1,29 +1,47 @@
 import io
 import os
 import time
+import uuid
 import base64
-import tempfile
+import logging
 from collections import deque
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import FileResponse, PlainTextResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
 from api.schemas import PredictionResponse, HealthResponse, Detection
 from api.model_loader import get_pipeline
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("vision_qa")
+
 app = FastAPI(
     title="Vision QA Pipeline",
-    description="Two-stage (YOLO11 + ResNet50) manufacturing defect detection API",
+    description=(
+        "Two-stage (YOLO11 + ResNet50) manufacturing defect detection API. "
+        "Detects and classifies surface defects in real-time via REST and WebSocket."
+    ),
     version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # rolling window of recent inference latencies + defect counts, for a live /stats view
-_recent_latencies_ms = deque(maxlen=200)
-_recent_defect_counts = deque(maxlen=200)
+_recent_latencies_ms: deque = deque(maxlen=200)
+_recent_defect_counts: deque = deque(maxlen=200)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -35,9 +53,10 @@ def health():
             status=status,
             yolo_loaded=bool(pipeline.detector),
             resnet_loaded=bool(pipeline.classifier),
+            mode="demo" if pipeline.fallback_mode else "production",
         )
     except Exception:
-        return HealthResponse(status="models not loaded", yolo_loaded=False, resnet_loaded=False)
+        return HealthResponse(status="models not loaded", yolo_loaded=False, resnet_loaded=False, mode="error")
 
 
 @app.get("/stats")
@@ -90,24 +109,18 @@ def live_demo_page():
 def _run_inference_on_image(image: Image.Image):
     pipeline = get_pipeline()
     start = time.perf_counter()
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        tmp_path = tmp.name
-    image.save(tmp_path)
-    detections = pipeline.predict(tmp_path)
+    detections = pipeline.predict(image)  # pass PIL image directly — no temp file
     elapsed_ms = (time.perf_counter() - start) * 1000
-
     _recent_latencies_ms.append(elapsed_ms)
     _recent_defect_counts.append(len(detections))
-    try:
-        os.unlink(tmp_path)
-    except OSError:
-        pass
+    logger.info("inference completed: %d detections in %.1f ms", len(detections), elapsed_ms)
     return detections, elapsed_ms
 
 
 @app.post("/predict", response_model=PredictionResponse)
-async def predict(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
+async def predict(request: Request, file: UploadFile = File(...)):
+    request_id = str(uuid.uuid4())[:8]
+    if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
 
     contents = await file.read()
@@ -117,12 +130,14 @@ async def predict(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Could not decode image")
 
     detections, elapsed_ms = _run_inference_on_image(image)
+    logger.info("[%s] predict: file=%s defects=%d", request_id, file.filename, len(detections))
 
     return PredictionResponse(
         filename=file.filename,
         num_defects=len(detections),
         inference_time_ms=round(elapsed_ms, 2),
         detections=[Detection(**d) for d in detections],
+        request_id=request_id,
     )
 
 

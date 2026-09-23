@@ -103,8 +103,13 @@ class DefectPipeline:
             "classification_confidence": 0.5,
         }]
 
-    def predict(self, image_path: str, conf_threshold: float = 0.25) -> List[Dict]:
-        image = Image.open(image_path).convert("RGB")
+    def predict(self, image_input, conf_threshold: float = 0.25) -> List[Dict]:
+        """Accept either a file path (str/Path) or a PIL Image directly."""
+        if isinstance(image_input, (str, Path)):
+            image = Image.open(image_input).convert("RGB")
+        else:
+            image = image_input  # already a PIL Image
+
         if self.fallback_mode or self.detector is None or self.classifier is None:
             return self._fallback_prediction(image)
 

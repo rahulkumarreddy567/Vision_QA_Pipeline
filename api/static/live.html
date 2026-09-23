@@ -2,92 +2,190 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Vision QA — Live Defect Detection</title>
 <style>
-  body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 20px; }
-  h1 { font-size: 1.2rem; font-weight: 600; }
-  #wrap { position: relative; width: 640px; max-width: 100%; }
-  video, canvas { width: 100%; border-radius: 8px; }
-  canvas { position: absolute; top: 0; left: 0; }
-  #stats { margin-top: 12px; font-size: 0.9rem; color: #9f9; }
-  #status { color: #f99; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 20px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  header h1 { font-size: 1.1rem; font-weight: 600; }
+  .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
+  .badge-ok { background: #1a4731; color: #3fb950; }
+  .badge-warn { background: #3d2b00; color: #d29922; }
+  .badge-err { background: #3d1a1a; color: #f85149; }
+
+  .layout { display: flex; gap: 20px; flex-wrap: wrap; }
+  #wrap { position: relative; flex: 0 0 auto; width: min(640px, 100%); }
+  video, canvas { width: 100%; border-radius: 8px; display: block; }
+  canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+  .sidebar { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+  .card h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #8b949e; margin-bottom: 10px; }
+  .metric { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .metric-label { font-size: 0.85rem; color: #8b949e; }
+  .metric-value { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .metric-value.alert { color: #f85149; }
+  .metric-value.ok { color: #3fb950; }
+
+  #log { font-size: 0.75rem; font-family: monospace; color: #8b949e; max-height: 140px; overflow-y: auto; }
+  #log div { padding: 2px 0; border-bottom: 1px solid #21262d; }
+  #log div:last-child { border-bottom: none; }
+
+  button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 0.9rem; cursor: pointer; width: 100%; }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
 </style>
 </head>
 <body>
-  <h1>Vision QA Pipeline — Live Defect Detection</h1>
-  <div id="wrap">
-    <video id="video" autoplay muted playsinline></video>
-    <canvas id="overlay"></canvas>
+  <header>
+    <h1>Vision QA Pipeline — Live Defect Detection</h1>
+    <span id="conn-badge" class="badge badge-warn">Connecting…</span>
+  </header>
+
+  <div class="layout">
+    <div id="wrap">
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div class="sidebar">
+      <div class="card">
+        <h2>Real-time Metrics</h2>
+        <div class="metric"><span class="metric-label">Defects detected</span><span id="m-defects" class="metric-value">—</span></div>
+        <div class="metric"><span class="metric-label">Inference latency</span><span id="m-latency" class="metric-value">—</span></div>
+        <div class="metric"><span class="metric-label">Stream FPS</span><span id="m-fps" class="metric-value">—</span></div>
+        <div class="metric"><span class="metric-label">Total frames</span><span id="m-frames" class="metric-value">0</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Detection Log</h2>
+        <div id="log"><div>Waiting for detections…</div></div>
+      </div>
+
+      <div class="card">
+        <button id="btn-start" onclick="startCamera()">Start Camera</button>
+      </div>
+    </div>
   </div>
-  <div id="stats">Connecting…</div>
-  <div id="status"></div>
 
 <script>
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
 const ctx = overlay.getContext('2d');
-const statsEl = document.getElementById('stats');
-const statusEl = document.getElementById('status');
-
+const badge = document.getElementById('conn-badge');
+const logEl = document.getElementById('log');
 const captureCanvas = document.createElement('canvas');
 const captureCtx = captureCanvas.getContext('2d');
 
-const SEND_INTERVAL_MS = 300; // throttle: send ~3 frames/sec, adjust for your GPU
+const SEND_INTERVAL_MS = 300;
+let ws = null, wsRetryDelay = 1000, frameCount = 0, lastFpsTime = Date.now(), fpsFrames = 0;
 
-async function start() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    video.srcObject = stream;
-  } catch (err) {
-    statusEl.textContent = 'Camera access denied or unavailable: ' + err.message;
-    return;
-  }
+function setBadge(text, cls) {
+  badge.textContent = text;
+  badge.className = 'badge ' + cls;
+}
 
-  video.addEventListener('loadedmetadata', () => {
-    overlay.width = video.videoWidth;
-    overlay.height = video.videoHeight;
-    captureCanvas.width = video.videoWidth;
-    captureCanvas.height = video.videoHeight;
-  });
+function addLog(msg) {
+  const d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString() + ' — ' + msg;
+  logEl.prepend(d);
+  while (logEl.children.length > 30) logEl.removeChild(logEl.lastChild);
+}
 
+function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+  ws = new WebSocket(`${proto}://${location.host}/ws/stream`);
+  setBadge('Connecting…', 'badge-warn');
 
-  ws.onopen = () => { statsEl.textContent = 'Connected. Streaming…'; };
-  ws.onclose = () => { statsEl.textContent = 'Disconnected.'; };
-  ws.onerror = () => { statusEl.textContent = 'WebSocket error — is the server running?'; };
+  ws.onopen = () => {
+    setBadge('Connected', 'badge-ok');
+    wsRetryDelay = 1000;
+    addLog('WebSocket connected');
+  };
+
+  ws.onclose = () => {
+    setBadge('Reconnecting…', 'badge-warn');
+    addLog(`Disconnected — retrying in ${wsRetryDelay / 1000}s`);
+    setTimeout(connectWS, wsRetryDelay);
+    wsRetryDelay = Math.min(wsRetryDelay * 2, 16000); // exponential back-off, cap 16s
+  };
+
+  ws.onerror = () => {
+    setBadge('Error', 'badge-err');
+    addLog('WebSocket error');
+  };
 
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    drawDetections(data.detections || []);
-    statsEl.textContent =
-      `defects: ${data.num_defects} | inference: ${data.inference_time_ms.toFixed(1)} ms`;
-  };
+    frameCount++;
+    fpsFrames++;
 
-  setInterval(() => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
-    const frame = captureCanvas.toDataURL('image/jpeg', 0.6);
-    ws.send(frame);
-  }, SEND_INTERVAL_MS);
+    document.getElementById('m-defects').textContent = data.num_defects;
+    document.getElementById('m-defects').className = 'metric-value ' + (data.num_defects > 0 ? 'alert' : 'ok');
+    document.getElementById('m-latency').textContent = data.inference_time_ms.toFixed(1) + ' ms';
+    document.getElementById('m-frames').textContent = frameCount;
+
+    const now = Date.now();
+    if (now - lastFpsTime >= 1000) {
+      document.getElementById('m-fps').textContent = (fpsFrames / ((now - lastFpsTime) / 1000)).toFixed(1);
+      fpsFrames = 0; lastFpsTime = now;
+    }
+
+    if (data.num_defects > 0) {
+      addLog(`${data.num_defects} defect(s) — ${data.inference_time_ms.toFixed(1)} ms`);
+    }
+    drawDetections(data.detections || []);
+  };
+}
+
+async function startCamera() {
+  document.getElementById('btn-start').disabled = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    video.srcObject = stream;
+    video.addEventListener('loadedmetadata', () => {
+      overlay.width = video.videoWidth;
+      overlay.height = video.videoHeight;
+      captureCanvas.width = video.videoWidth;
+      captureCanvas.height = video.videoHeight;
+    });
+    connectWS();
+    setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+      ws.send(captureCanvas.toDataURL('image/jpeg', 0.6));
+    }, SEND_INTERVAL_MS);
+  } catch (err) {
+    setBadge('Camera denied', 'badge-err');
+    addLog('Camera error: ' + err.message);
+    document.getElementById('btn-start').disabled = false;
+  }
+}
+
+const COLORS = ['#ff3b3b', '#ff9f0a', '#30d158', '#0a84ff', '#bf5af2', '#ff375f'];
+function colorFor(type) {
+  let h = 0; for (const c of type) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  return COLORS[h % COLORS.length];
 }
 
 function drawDetections(detections) {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   ctx.lineWidth = 2;
-  ctx.strokeStyle = '#ff3b3b';
-  ctx.font = '16px system-ui';
-  ctx.fillStyle = '#ff3b3b';
-
+  ctx.font = 'bold 13px system-ui';
   for (const d of detections) {
     const [x1, y1, x2, y2] = d.bbox;
+    const color = colorFor(d.defect_type);
+    ctx.strokeStyle = color;
     ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     const label = `${d.defect_type} ${(d.classification_confidence * 100).toFixed(0)}%`;
-    ctx.fillText(label, x1, Math.max(y1 - 6, 12));
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = color;
+    ctx.fillRect(x1, Math.max(y1 - 18, 0), tw + 8, 18);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, x1 + 4, Math.max(y1 - 4, 14));
   }
 }
-
-start();
 </script>
 </body>
 </html>

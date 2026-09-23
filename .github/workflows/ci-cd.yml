@@ -22,55 +22,62 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ -v --tb=short
         env:
           PYTHONPATH: ${{ github.workspace }}
 
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    env:
-      HAS_DOCKER_SECRETS: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      image_pushed: ${{ steps.push_check.outputs.pushed }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip notice (no Docker secrets)
-        if: env.HAS_DOCKER_SECRETS == 'false'
+      - name: Check Docker secrets
+        id: push_check
         run: |
-          echo "::notice::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets not set — skipping Docker push."
-          echo "Add them at: Settings > Secrets and variables > Actions"
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
+            echo "pushed=true" >> $GITHUB_OUTPUT
+          else
+            echo "pushed=false" >> $GITHUB_OUTPUT
+            echo "::notice::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN not set — skipping Docker push."
+          fi
 
       - name: Log in to Docker Hub
-        if: env.HAS_DOCKER_SECRETS == 'true'
+        if: steps.push_check.outputs.pushed == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push image
-        if: env.HAS_DOCKER_SECRETS == 'true'
+        if: steps.push_check.outputs.pushed == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/vision-qa-pipeline:latest
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/vision-qa-pipeline:latest,${{ secrets.DOCKERHUB_USERNAME }}/vision-qa-pipeline:${{ github.sha }}
 
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    env:
-      HAS_AWS_SECRETS: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+    # Only deploy when an image was actually pushed — not on skipped builds
+    if: needs.build-and-push.outputs.image_pushed == 'true'
     steps:
-      - name: Skip notice (no AWS secrets)
-        if: env.HAS_AWS_SECRETS == 'false'
+      - name: Check AWS secrets
+        id: aws_check
         run: |
-          echo "::notice::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets not set — skipping ECS deploy."
-          echo "Add them at: Settings > Secrets and variables > Actions"
+          if [[ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" && -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy=false" >> $GITHUB_OUTPUT
+            echo "::notice::AWS secrets not set — skipping ECS deploy."
+          fi
 
       - name: Configure AWS credentials
-        if: env.HAS_AWS_SECRETS == 'true'
+        if: steps.aws_check.outputs.deploy == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -78,7 +85,7 @@ jobs:
           aws-region: eu-west-3
 
       - name: Deploy to ECS
-        if: env.HAS_AWS_SECRETS == 'true'
+        if: steps.aws_check.outputs.deploy == 'true'
         run: |
           aws ecs update-service \
             --cluster vision-qa-cluster \
