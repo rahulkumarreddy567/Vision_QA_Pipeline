@@ -8,7 +8,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, UnidentifiedImageError
@@ -72,9 +72,17 @@ def _validate_image_file(filename: str, content_type: str):
 def _decode_image(data: bytes) -> Image.Image:
     try:
         with io.BytesIO(data) as buf:
-            return Image.open(buf).convert("RGB")
+            image = Image.open(buf)
+            image.load()  # force full decode while buffer is still open
+            return image.convert("RGB")
     except (UnidentifiedImageError, Exception):
         raise HTTPException(status_code=400, detail="Could not decode image")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """Redirect root to the interactive API docs."""
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -186,6 +194,11 @@ async def stream_predictions(websocket: WebSocket):
             if "," in data:
                 data = data.split(",", 1)[1]
 
+            # handle keepalive ping from client
+            if data.strip() == "ping":
+                await websocket.send_text("pong")
+                continue
+
             try:
                 frame_bytes = base64.b64decode(data)
             except Exception:
@@ -216,3 +229,6 @@ async def stream_predictions(websocket: WebSocket):
         logger.info("WebSocket client disconnected: %s", websocket.client)
     except Exception as e:
         logger.error("Unexpected WebSocket error: %s", e)
+    finally:
+        clearInterval = None  # no-op, just ensure clean exit log
+        logger.info("WebSocket session ended: %s", websocket.client)

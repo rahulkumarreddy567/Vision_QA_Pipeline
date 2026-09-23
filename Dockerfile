@@ -39,11 +39,12 @@ COPY yolo11n.pt .
 RUN chown -R appuser:appuser /app
 USER appuser
 
-# Render.com injects $PORT (default 10000). Fall back to 8000 for local/Docker use.
+# Render injects $PORT at runtime (usually 10000). Default 8000 for local use.
 ENV PORT=8000
-EXPOSE $PORT
+EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=5 --start-period=60s \
     CMD python -c "import urllib.request,os; urllib.request.urlopen('http://localhost:'+os.environ.get('PORT','8000')+'/health')" || exit 1
 
-CMD uvicorn api.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --timeout-keep-alive 75
+# Shell form so $PORT is expanded from the environment at container start
+CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --timeout-keep-alive 75"]

@@ -7,17 +7,28 @@
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, -apple-system, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; padding: 20px; }
-  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
   header h1 { font-size: 1.1rem; font-weight: 600; }
   .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
   .badge-ok { background: #1a4731; color: #3fb950; }
   .badge-warn { background: #3d2b00; color: #d29922; }
   .badge-err { background: #3d1a1a; color: #f85149; }
 
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tab { padding: 6px 16px; border-radius: 6px; border: 1px solid #30363d; background: #161b22;
+         color: #8b949e; cursor: pointer; font-size: 0.85rem; }
+  .tab.active { background: #238636; color: #fff; border-color: #238636; }
+
   .layout { display: flex; gap: 20px; flex-wrap: wrap; }
   #wrap { position: relative; flex: 0 0 auto; width: min(640px, 100%); }
-  video, canvas { width: 100%; border-radius: 8px; display: block; }
+  video, canvas, #upload-preview { width: 100%; border-radius: 8px; display: block; }
   canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
+  #upload-preview { max-height: 480px; object-fit: contain; background: #161b22; min-height: 200px; }
+
+  .upload-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 40px 20px;
+                 text-align: center; color: #8b949e; cursor: pointer; transition: border-color .2s; }
+  .upload-zone:hover, .upload-zone.drag { border-color: #238636; color: #e6edf3; }
+  .upload-zone input { display: none; }
 
   .sidebar { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 12px; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
@@ -32,66 +43,175 @@
   #log div { padding: 2px 0; border-bottom: 1px solid #21262d; }
   #log div:last-child { border-bottom: none; }
 
-  button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 0.9rem; cursor: pointer; width: 100%; }
+  button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px;
+           font-size: 0.9rem; cursor: pointer; width: 100%; }
   button:hover { background: #2ea043; }
   button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  #upload-btn { margin-top: 8px; }
 </style>
 </head>
 <body>
   <header>
-    <h1>Vision QA Pipeline — Live Defect Detection</h1>
-    <span id="conn-badge" class="badge badge-warn">Connecting…</span>
+    <h1>Vision QA Pipeline — Defect Detection</h1>
+    <span id="conn-badge" class="badge badge-warn">Idle</span>
   </header>
 
-  <div class="layout">
-    <div id="wrap">
-      <video id="video" autoplay muted playsinline></video>
-      <canvas id="overlay"></canvas>
+  <div class="tabs">
+    <div class="tab active" id="tab-upload" onclick="switchTab('upload')">📁 Upload Image</div>
+    <div class="tab" id="tab-cam" onclick="switchTab('cam')">📷 Live Camera</div>
+  </div>
+
+  <!-- Upload mode -->
+  <div id="panel-upload">
+    <div class="layout">
+      <div id="wrap">
+        <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()"
+             ondragover="event.preventDefault();this.classList.add('drag')"
+             ondragleave="this.classList.remove('drag')"
+             ondrop="handleDrop(event)">
+          <input type="file" id="file-input" accept="image/*" onchange="handleFileSelect(event)">
+          <p style="font-size:1.1rem;margin-bottom:8px">Drop an image here or click to browse</p>
+          <p style="font-size:0.8rem">JPG, PNG, BMP, WEBP supported</p>
+        </div>
+        <div style="position:relative;margin-top:8px;display:none" id="preview-wrap">
+          <img id="upload-preview" alt="preview">
+          <canvas id="overlay"></canvas>
+        </div>
+      </div>
+      <div class="sidebar">
+        <div class="card">
+          <h2>Result</h2>
+          <div class="metric"><span class="metric-label">Defects found</span><span id="m-defects" class="metric-value">—</span></div>
+          <div class="metric"><span class="metric-label">Inference time</span><span id="m-latency" class="metric-value">—</span></div>
+        </div>
+        <div class="card">
+          <h2>Detection Log</h2>
+          <div id="log"><div>Upload an image to start…</div></div>
+        </div>
+        <div class="card">
+          <button id="upload-btn" onclick="document.getElementById('file-input').click()">Choose Image</button>
+        </div>
+      </div>
     </div>
+  </div>
 
-    <div class="sidebar">
-      <div class="card">
-        <h2>Real-time Metrics</h2>
-        <div class="metric"><span class="metric-label">Defects detected</span><span id="m-defects" class="metric-value">—</span></div>
-        <div class="metric"><span class="metric-label">Inference latency</span><span id="m-latency" class="metric-value">—</span></div>
-        <div class="metric"><span class="metric-label">Stream FPS</span><span id="m-fps" class="metric-value">—</span></div>
-        <div class="metric"><span class="metric-label">Total frames</span><span id="m-frames" class="metric-value">0</span></div>
+  <!-- Camera mode -->
+  <div id="panel-cam" style="display:none">
+    <div class="layout">
+      <div id="wrap-cam">
+        <video id="video" autoplay muted playsinline style="width:min(640px,100%);border-radius:8px;display:block"></video>
+        <canvas id="overlay-cam" style="position:absolute;top:0;left:0;pointer-events:none;width:min(640px,100%);border-radius:8px"></canvas>
       </div>
-
-      <div class="card">
-        <h2>Detection Log</h2>
-        <div id="log"><div>Waiting for detections…</div></div>
-      </div>
-
-      <div class="card">
-        <button id="btn-start" onclick="startCamera()">Start Camera</button>
+      <div class="sidebar">
+        <div class="card">
+          <h2>Real-time Metrics</h2>
+          <div class="metric"><span class="metric-label">Defects detected</span><span id="m-defects-cam" class="metric-value">—</span></div>
+          <div class="metric"><span class="metric-label">Inference latency</span><span id="m-latency-cam" class="metric-value">—</span></div>
+          <div class="metric"><span class="metric-label">Stream FPS</span><span id="m-fps" class="metric-value">—</span></div>
+          <div class="metric"><span class="metric-label">Total frames</span><span id="m-frames" class="metric-value">0</span></div>
+        </div>
+        <div class="card">
+          <h2>Detection Log</h2>
+          <div id="log-cam"><div>Start camera to begin…</div></div>
+        </div>
+        <div class="card">
+          <button id="btn-start" onclick="startCamera()">Start Camera</button>
+        </div>
       </div>
     </div>
   </div>
 
 <script>
-const video = document.getElementById('video');
-const overlay = document.getElementById('overlay');
-const ctx = overlay.getContext('2d');
-const badge = document.getElementById('conn-badge');
-const logEl = document.getElementById('log');
-const captureCanvas = document.createElement('canvas');
-const captureCtx = captureCanvas.getContext('2d');
-
-const SEND_INTERVAL_MS = 300;
-let ws = null, wsRetryDelay = 1000, frameCount = 0, lastFpsTime = Date.now(), fpsFrames = 0;
-
-function setBadge(text, cls) {
-  badge.textContent = text;
-  badge.className = 'badge ' + cls;
+// ── Tab switching ──────────────────────────────────────────────
+function switchTab(tab) {
+  document.getElementById('panel-upload').style.display = tab === 'upload' ? '' : 'none';
+  document.getElementById('panel-cam').style.display   = tab === 'cam'    ? '' : 'none';
+  document.getElementById('tab-upload').className = 'tab' + (tab === 'upload' ? ' active' : '');
+  document.getElementById('tab-cam').className    = 'tab' + (tab === 'cam'    ? ' active' : '');
 }
 
-function addLog(msg) {
+const badge = document.getElementById('conn-badge');
+function setBadge(text, cls) { badge.textContent = text; badge.className = 'badge ' + cls; }
+
+function addLog(elId, msg) {
+  const log = document.getElementById(elId);
   const d = document.createElement('div');
   d.textContent = new Date().toLocaleTimeString() + ' — ' + msg;
-  logEl.prepend(d);
-  while (logEl.children.length > 30) logEl.removeChild(logEl.lastChild);
+  log.prepend(d);
+  while (log.children.length > 30) log.removeChild(log.lastChild);
 }
+
+// ── Upload / REST mode (no camera needed) ─────────────────────
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file) runUpload(file);
+}
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (file) runUpload(file);
+}
+
+async function runUpload(file) {
+  setBadge('Running…', 'badge-warn');
+  addLog('log', `Uploading ${file.name} (${(file.size/1024).toFixed(1)} KB)`);
+
+  // show preview
+  const previewWrap = document.getElementById('preview-wrap');
+  const preview = document.getElementById('upload-preview');
+  preview.src = URL.createObjectURL(file);
+  previewWrap.style.display = '';
+  document.getElementById('drop-zone').style.display = 'none';
+
+  // clear old overlay
+  const canvas = document.getElementById('overlay');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const res = await fetch('/predict', { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    const data = await res.json();
+
+    document.getElementById('m-defects').textContent = data.num_defects;
+    document.getElementById('m-defects').className = 'metric-value ' + (data.num_defects > 0 ? 'alert' : 'ok');
+    document.getElementById('m-latency').textContent = data.inference_time_ms.toFixed(1) + ' ms';
+
+    addLog('log', `${data.num_defects} defect(s) found — ${data.inference_time_ms.toFixed(1)} ms`);
+    setBadge('Done', 'badge-ok');
+
+    // draw boxes after image loads
+    preview.onload = () => {
+      canvas.width  = preview.naturalWidth;
+      canvas.height = preview.naturalHeight;
+      // scale canvas display to match img display size
+      canvas.style.width  = preview.offsetWidth  + 'px';
+      canvas.style.height = preview.offsetHeight + 'px';
+      drawDetections(ctx, data.detections || [], canvas.width, canvas.height);
+    };
+    if (preview.complete) preview.onload();
+
+  } catch (err) {
+    setBadge('Error', 'badge-err');
+    addLog('log', 'Error: ' + err.message);
+  }
+}
+
+// ── WebSocket / Camera mode ────────────────────────────────────
+let ws = null, wsRetryDelay = 1000, frameCount = 0;
+let lastFpsTime = Date.now(), fpsFrames = 0;
+let pingInterval = null;
+
+const captureCanvas = document.createElement('canvas');
+const captureCtx = captureCanvas.getContext('2d');
+const SEND_INTERVAL_MS = 300;
 
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -101,29 +221,38 @@ function connectWS() {
   ws.onopen = () => {
     setBadge('Connected', 'badge-ok');
     wsRetryDelay = 1000;
-    addLog('WebSocket connected');
+    addLog('log-cam', 'WebSocket connected');
+    // keepalive ping every 30s to prevent Render's 55s idle timeout
+    pingInterval = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send('ping');
+    }, 30000);
   };
 
   ws.onclose = () => {
+    clearInterval(pingInterval);
     setBadge('Reconnecting…', 'badge-warn');
-    addLog(`Disconnected — retrying in ${wsRetryDelay / 1000}s`);
+    addLog('log-cam', `Disconnected — retrying in ${wsRetryDelay / 1000}s`);
     setTimeout(connectWS, wsRetryDelay);
-    wsRetryDelay = Math.min(wsRetryDelay * 2, 16000); // exponential back-off, cap 16s
+    wsRetryDelay = Math.min(wsRetryDelay * 2, 16000);
   };
 
   ws.onerror = () => {
     setBadge('Error', 'badge-err');
-    addLog('WebSocket error');
+    addLog('log-cam', 'WebSocket error');
   };
 
   ws.onmessage = (event) => {
-    const data = JSON.parse(event.data);
+    // ignore pong / non-JSON keepalive responses
+    if (!event.data || event.data === 'pong') return;
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (data.error) { addLog('log-cam', 'Server error: ' + data.error); return; }
+
     frameCount++;
     fpsFrames++;
-
-    document.getElementById('m-defects').textContent = data.num_defects;
-    document.getElementById('m-defects').className = 'metric-value ' + (data.num_defects > 0 ? 'alert' : 'ok');
-    document.getElementById('m-latency').textContent = data.inference_time_ms.toFixed(1) + ' ms';
+    document.getElementById('m-defects-cam').textContent = data.num_defects;
+    document.getElementById('m-defects-cam').className = 'metric-value ' + (data.num_defects > 0 ? 'alert' : 'ok');
+    document.getElementById('m-latency-cam').textContent = data.inference_time_ms.toFixed(1) + ' ms';
     document.getElementById('m-frames').textContent = frameCount;
 
     const now = Date.now();
@@ -131,11 +260,10 @@ function connectWS() {
       document.getElementById('m-fps').textContent = (fpsFrames / ((now - lastFpsTime) / 1000)).toFixed(1);
       fpsFrames = 0; lastFpsTime = now;
     }
+    if (data.num_defects > 0) addLog('log-cam', `${data.num_defects} defect(s) — ${data.inference_time_ms.toFixed(1)} ms`);
 
-    if (data.num_defects > 0) {
-      addLog(`${data.num_defects} defect(s) — ${data.inference_time_ms.toFixed(1)} ms`);
-    }
-    drawDetections(data.detections || []);
+    const camCanvas = document.getElementById('overlay-cam');
+    drawDetections(camCanvas.getContext('2d'), data.detections || [], camCanvas.width, camCanvas.height);
   };
 }
 
@@ -143,11 +271,13 @@ async function startCamera() {
   document.getElementById('btn-start').disabled = true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    const video = document.getElementById('video');
     video.srcObject = stream;
     video.addEventListener('loadedmetadata', () => {
-      overlay.width = video.videoWidth;
-      overlay.height = video.videoHeight;
-      captureCanvas.width = video.videoWidth;
+      const cam = document.getElementById('overlay-cam');
+      cam.width  = video.videoWidth;
+      cam.height = video.videoHeight;
+      captureCanvas.width  = video.videoWidth;
       captureCanvas.height = video.videoHeight;
     });
     connectWS();
@@ -158,19 +288,20 @@ async function startCamera() {
     }, SEND_INTERVAL_MS);
   } catch (err) {
     setBadge('Camera denied', 'badge-err');
-    addLog('Camera error: ' + err.message);
+    addLog('log-cam', 'Camera error: ' + err.message);
     document.getElementById('btn-start').disabled = false;
   }
 }
 
+// ── Drawing ────────────────────────────────────────────────────
 const COLORS = ['#ff3b3b', '#ff9f0a', '#30d158', '#0a84ff', '#bf5af2', '#ff375f'];
 function colorFor(type) {
   let h = 0; for (const c of type) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
   return COLORS[h % COLORS.length];
 }
 
-function drawDetections(detections) {
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
+function drawDetections(ctx, detections, w, h) {
+  ctx.clearRect(0, 0, w, h);
   ctx.lineWidth = 2;
   ctx.font = 'bold 13px system-ui';
   for (const d of detections) {
