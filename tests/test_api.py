@@ -101,10 +101,10 @@ def test_predict_corrupt_image_returns_400():
     assert response.status_code == 400
 
 
-def test_root_redirects_to_docs():
-    response = client.get("/", follow_redirects=False)
-    assert response.status_code in (301, 302, 307, 308)
-    assert "/docs" in response.headers["location"]
+def test_root_returns_html():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
 
 
 def test_live_page_returns_html():
