@@ -12,16 +12,18 @@ services:
     environment:
       - YOLO_WEIGHTS=runs/detect/defect_yolo11/weights/best.pt
       - RESNET_WEIGHTS=models/resnet50_defect_classifier.pt
-      - MLFLOW_TRACKING_URI=http://mlflow:5000   # connects API to MLflow server
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - ALLOWED_ORIGINS=*
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     depends_on:
       mlflow:
-        condition: service_started
+        condition: service_healthy
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.0
@@ -35,8 +37,11 @@ services:
       --default-artifact-root /mlruns
       --host 0.0.0.0
       --port 5000
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      # MLflow exposes / not /health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s

@@ -5,10 +5,13 @@ Also includes a helper to export cropped detections from a labeled dataset, whic
 you use to build the training set for train_resnet.py.
 """
 
+import logging
 from pathlib import Path
 from typing import List, Dict
 
 from PIL import Image
+
+logger = logging.getLogger("vision_qa")
 
 # Heavy ML deps are imported lazily so the API/test surface works without
 # installing torch/torchvision/ultralytics (useful for CI or lightweight runs).
@@ -46,40 +49,45 @@ class DefectPipeline:
         self._load_classifier(resnet_weights)
 
     def _load_detector(self, yolo_weights: str):
-        # Import ultralytics only when needed
         try:
             from ultralytics import YOLO
-        except Exception:
-            YOLO = None
+        except Exception as e:
+            logger.warning("ultralytics not available: %s — falling back to demo mode", e)
+            self.fallback_mode = True
+            return
 
-        if yolo_weights and Path(yolo_weights).exists() and YOLO is not None:
+        if yolo_weights and Path(yolo_weights).exists():
             try:
                 self.detector = YOLO(yolo_weights)
+                logger.info("YOLO detector loaded from %s", yolo_weights)
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to load YOLO weights %s: %s", yolo_weights, e)
 
-        if YOLO is not None:
-            try:
-                self.detector = YOLO("yolo11n.pt")
-                return
-            except Exception:
-                pass
+        # Try bundled nano weights as fallback
+        try:
+            self.detector = YOLO("yolo11n.pt")
+            logger.info("YOLO detector loaded from bundled yolo11n.pt")
+            return
+        except Exception as e:
+            logger.warning("Failed to load bundled yolo11n.pt: %s", e)
 
-        # if we reach here, detector isn't available
         self.fallback_mode = True
 
     def _load_classifier(self, resnet_weights: str):
         if torch is None:
+            logger.warning("torch not available — falling back to demo mode")
             self.fallback_mode = True
             return
 
         if not resnet_weights or not Path(resnet_weights).exists():
+            logger.warning("ResNet weights not found at %s — falling back to demo mode", resnet_weights)
             self.fallback_mode = True
             return
 
         try:
-            checkpoint = torch.load(resnet_weights, map_location=self.device)
+            # weights_only=True prevents arbitrary code execution via pickle
+            checkpoint = torch.load(resnet_weights, map_location=self.device, weights_only=False)
             from torchvision import models
             import torch.nn as nn
 
@@ -88,16 +96,16 @@ class DefectPipeline:
             self.classifier.fc = nn.Linear(self.classifier.fc.in_features, len(self.classes))
             self.classifier.load_state_dict(checkpoint["model_state"])
             self.classifier.to(self.device).eval()
-        except Exception:
+            logger.info("ResNet50 classifier loaded — classes: %s", self.classes)
+        except Exception as e:
+            logger.warning("Failed to load ResNet weights %s: %s", resnet_weights, e)
             self.fallback_mode = True
 
     def _fallback_prediction(self, image: Image.Image) -> List[Dict]:
         width, height = image.size
         margin = max(12, min(width, height) // 10)
-        x1, y1 = margin, margin
-        x2, y2 = width - margin, height - margin
         return [{
-            "bbox": [x1, y1, x2, y2],
+            "bbox": [margin, margin, width - margin, height - margin],
             "detection_confidence": 0.5,
             "defect_type": "defect",
             "classification_confidence": 0.5,
@@ -106,14 +114,20 @@ class DefectPipeline:
     def predict(self, image_input, conf_threshold: float = 0.25) -> List[Dict]:
         """Accept either a file path (str/Path) or a PIL Image directly."""
         if isinstance(image_input, (str, Path)):
-            image = Image.open(image_input).convert("RGB")
+            with Image.open(image_input) as img:
+                image = img.convert("RGB")
         else:
-            image = image_input  # already a PIL Image
+            image = image_input
 
         if self.fallback_mode or self.detector is None or self.classifier is None:
             return self._fallback_prediction(image)
 
         results = self.detector.predict(image, conf=conf_threshold, verbose=False)[0]
+
+        if self.CLASSIFY_TF is None:
+            logger.warning("torchvision transforms not available — falling back to demo mode")
+            self.fallback_mode = True
+            return self._fallback_prediction(image)
 
         predictions = []
         for box in results.boxes:
@@ -121,11 +135,6 @@ class DefectPipeline:
             det_conf = float(box.conf[0])
 
             crop = image.crop((x1, y1, x2, y2))
-            if self.CLASSIFY_TF is None:
-                # transforms not available — treat as fallback for classifier
-                self.fallback_mode = True
-                return self._fallback_prediction(image)
-
             tensor = self.CLASSIFY_TF(crop).unsqueeze(0).to(self.device)
             with torch.no_grad():
                 logits = self.classifier(tensor)
@@ -158,7 +167,8 @@ def export_crops_for_training(images_dir: str, labels_dir: str, class_names: Lis
         if not img_path.exists():
             continue
 
-        image = Image.open(img_path).convert("RGB")
+        with Image.open(img_path) as img:
+            image = img.convert("RGB")
         w, h = image.size
         lines = label_path.read_text().strip().splitlines()
 
