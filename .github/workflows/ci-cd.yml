@@ -9,6 +9,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vision-qa-pipeline
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +20,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
+          cache-dependency-path: vision-qa-pipeline/requirements.txt
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -24,7 +28,7 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
         env:
-          PYTHONPATH: ${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}/vision-qa-pipeline
 
   build-and-push:
     needs: test
@@ -32,6 +36,9 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     outputs:
       image_pushed: ${{ steps.push_check.outputs.pushed }}
+    defaults:
+      run:
+        working-directory: vision-qa-pipeline
     steps:
       - uses: actions/checkout@v4
 
@@ -56,14 +63,15 @@ jobs:
         if: steps.push_check.outputs.pushed == 'true'
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: vision-qa-pipeline
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/vision-qa-pipeline:latest,${{ secrets.DOCKERHUB_USERNAME }}/vision-qa-pipeline:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/vision-qa-pipeline:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/vision-qa-pipeline:${{ github.sha }}
 
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    # Only deploy when an image was actually pushed — not on skipped builds
     if: needs.build-and-push.outputs.image_pushed == 'true'
     steps:
       - name: Check AWS secrets
@@ -91,3 +99,30 @@ jobs:
             --cluster vision-qa-cluster \
             --service vision-qa-api \
             --force-new-deployment
+
+  smoke-test:
+    needs: [test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: vision-qa-pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: vision-qa-pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait for Render to deploy (90s)
+        run: sleep 90
+
+      - name: Smoke test against Render
+        run: python scripts/smoke_predict.py --url https://vision-qa-pipeline.onrender.com
+        continue-on-error: true   # don't fail CI if Render free tier is cold-starting
